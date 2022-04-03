@@ -17,6 +17,7 @@
 #include <pwd.h>		//getHomeDir()
 #include <sys/stat.h>		//mkdir()
 #include <dirent.h>   //openDir()
+#include <time.h>     //Write_Log_File()
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -78,15 +79,24 @@ int Check_Exist_File(char* path, char *file_name, int is_exist_file){
   return 0;
 }
 
-void Write_Log_File(FILE *log_file, char *hashed_url_dir, char *hashed_url_file, int is_exist_file){
-  if(is_exist_file == 0){
-    fprintf(log_file, "[MISS]%s/%sss");
+void Write_Log_File(FILE *log_file, char *input_url, char *hashed_url_dir, char *hashed_url_file, int is_exist_file){
+  time_t now;
+  struct tm *ltp;
+
+  time(&now);
+  ltp = localtime(&now);
+  if(is_exist_file == 0)
+    fprintf(log_file, "[MISS]%s-[%d/%d/%d, %02d:%02d:%02d]\n", input_url, ltp->tm_year, ltp->tm_mon, ltp->tm_mday, ltp->tm_hour, ltp->tm_min, ltp->tm_sec);
+  else{
+    fprintf(log_file, "[HIT]%s/%s-[%d/%d/%d, %02d:%02d:%02d]\n", hashed_url_dir, hashed_url_file, ltp->tm_year, ltp->tm_mon, ltp->tm_mday, ltp->tm_hour, ltp->tm_min, ltp->tm_sec);
+    fprintf(log_file, "[HIT]%s\n", input_url);
   }
 }
 
 
 void main(void){
-  char input[100];		//Store input Data(URL or bye)
+  char input[100];		//Store input Data(URL or bye
+  char output[100];
   char hashed_url[60];		//Store hashed URL using SHA1
   char home_dir[100];		//Current user's home directory
   char cache_dir[100];   //Cache directory
@@ -114,14 +124,21 @@ void main(void){
   
   strcpy(temp_dir, log_dir);
   strcat(temp_dir, "/logfile.txt");
-  log_file = fopen(temp_dir, "a");
+  log_file = fopen(temp_dir, "a+");
+  fseek(log_file, 0, SEEK_END);
 
   while(1){
     printf("input url> ");	//get URL
     scanf("%s", input);
-    if(strcmp(input, "bye") == 0)	//if it's 'bye' command, end program
+    if(strcmp(input, "bye") == 0){	//if it's 'bye' command, end program
+      fseek(log_file, 0, SEEK_SET);
+      while(fgets(output, 100, log_file) != NULL){
+        printf("%s", output);
+      }
+      fclose(log_file);
       return;
-
+    }
+      
     is_exist_file = 1;
     sha1_hash(input, hashed_url);	//URL -> hashed URL
     strncpy(first_dir, hashed_url, 3);	//Directory name <- hashed URL[0~2]
@@ -131,15 +148,15 @@ void main(void){
     strcpy(temp_dir, cache_dir);		//Make directory ~/cache/Directory name (permission : rwxrwxrwx)
     strcat(temp_dir, "/");
     strcat(temp_dir, first_dir);
+
     if(mkdir(temp_dir, 0777) == 0)
       is_exist_file = 0;
     is_exist_file = Check_Exist_File(temp_dir, dir_div, is_exist_file);
+    Write_Log_File(log_file, input, first_dir, dir_div, is_exist_file);
 
     strcat(temp_dir, "/");		//Make empty file ~/cache/Directory name/File name (premission : rwxrwxrwx)
     strcat(temp_dir, dir_div);
     
-
-
     temp_file = fopen(temp_dir, "w");
     fclose(temp_file);
   }
