@@ -125,7 +125,6 @@ void Write_Log_File(FILE *log_file, char *input_url, char *hashed_url_dir, char 
 
 void main(void){
   char input[100];		//Store input Data(URL or bye
-  char output[100];
   char hashed_url[60];		//Store hashed URL using SHA1
   char home_dir[100];		//Current user's home directory
   char cache_dir[100];   //Cache directory
