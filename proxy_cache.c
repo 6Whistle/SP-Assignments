@@ -5,11 +5,14 @@
 // Author	: Jun Hwei Lee						     //
 // Student ID	: 2018202046						     //
 //---------------------------------------------------------------------------//
-// Title : System Programming Assignment #1-2 (proxy server)		     //
-// Description : 	Writing state(hit or miss) in logfile.txt		     //
+// Title : System Programming Assignment #1-3 (proxy server)		     //
+// Description :  Get command from user and make sub-process		     //
+//                In sub-process, make cache 			             //
+//                Write hit and miss terminate state in logfile.txt  	     //
 ///////////////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>		//printf()
+#include <stdlib.h>   //exit()
 #include <string.h>		//strcpy()
 #include <openssl/sha.h>	//SHA1()
 #include <sys/types.h>		//getHomeDir()
@@ -123,6 +126,16 @@ void Write_Log_File(FILE *log_file, char *input_url, char *hashed_url_dir, char 
   }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Sub_Process_Work							      //
+//============================================================================//
+// Input : char *input -> get URL from user,				      //
+//    char *cache_dir -> ~/cache path,				     	      //
+//    FILE *log_file -> Write ~/logfile/logfile.txt,			      //
+// Output : void						       	      //
+// Purpose : Make hashed url directory and file in ~/cache/,	              //
+//           write hit and miss state in ~/logfile/logfile.txt		      //
+////////////////////////////////////////////////////////////////////////////////
 
 void Sub_Process_Work(char *input, char *cache_dir, FILE *log_file){
   char hashed_url[60];		//Store hashed URL using SHA1
@@ -134,18 +147,17 @@ void Sub_Process_Work(char *input, char *cache_dir, FILE *log_file){
   int hit = 0, miss = 0;  //Count hit and miss
 
   FILE *temp_file;		//Using when make a empty file
-  pid_t current_pid = getpid();
-  time_t start_process_time;
-  time_t end_process_time;
-  time(&start_process_time);
+  pid_t current_pid = getpid();   //Current process id
+  time_t start_process_time, end_process_time;    //Process start and end time
+  time(&start_process_time);  //Check process start time
 
     while(1){
-    printf("[%d]input URL> ", current_pid);	//get URL
+    printf("[%d]input URL> ", current_pid);	//Print process id and get URL
     scanf("%s", input);
-    if(strcmp(input, "bye") == 0){	//if it's 'bye' command, write log at logfile.txt and end program
+    if(strcmp(input, "bye") == 0){	//if it's 'bye' command, write log at logfile.txt and end function
       
-      time(&end_process_time);      //check end time
-      fprintf(log_file, "[Terminated] run time: %d sec #request hit : %d, miss : %d\n", (int)(end_process_time-start_process_time), hit, miss);   //write execute time, hit, miss in logfile.txt
+      time(&end_process_time);      //check end process time
+      fprintf(log_file, "[Terminated] run time: %d sec #request hit : %d, miss : %d\n", (int)(end_process_time-start_process_time), hit, miss);   //write process execute time, hit, miss in logfile.txt
       return;         //end program
     }
       
@@ -166,7 +178,7 @@ void Sub_Process_Work(char *input, char *cache_dir, FILE *log_file){
 
     strcat(temp_dir, "/");		//Make empty file ~/cache/Directory name/File name (premission : rwxrwxrwx)
     strcat(temp_dir, dir_div);
-    temp_file = fopen(temp_dir, "w");
+    temp_file = fopen(temp_dir, "a+");
     fclose(temp_file);
   }
 }
@@ -179,7 +191,7 @@ void main(void){
   char log_dir[100];    //Log directory
   char first_dir[4];		//Directory that will be made in cache directory
   char *dir_div;		//Seperate point of hashed URL name
-  int process_count = 0, status;
+  int process_count = 0;    //Count sub-process
 
   FILE *log_file;     //Using when write log file
   pid_t pid, current_pid = getpid();
@@ -205,26 +217,27 @@ void main(void){
   fseek(log_file, 0, SEEK_END);       //file pointer is in the end of file
 
   while(1){
-    printf("[%d]input CMD> ", current_pid);
-    scanf("%s", &input);
+    printf("[%d]input CMD> ", current_pid); //Print Current pid and get command
+    scanf("%s", input);
 
-    if(strcmp(input, "quit") == 0){
-      time(&end_time);
-      fprintf(log_file, "**SERVER** [Terminated] runtime: %d  sec. #sub process: %d\n", end_time - start_time, process_count);
-      fclose(log_file);
+    if(strcmp(input, "quit") == 0){   //if command is "quit", write log at logfile.txt and end program
+      time(&end_time);    //Check end time
+      fprintf(log_file, "**SERVER** [Terminated] runtime: %d  sec. #sub process: %d\n", (int)(end_time - start_time), process_count); //Write end server comment, execute time, sub-process count in logfile.txt
+      fclose(log_file);   //close logfile.txt
       return;
     }
-    if(strcmp(input, "connect") == 0){
-      if((pid = fork()) < 0){
+    if(strcmp(input, "connect") == 0){  //if command is "connect", make sub-process and run Sub_Process_Work in that process
+      if((pid = fork()) < 0){     //if failed to make sub-process, print error
         fprintf(stderr, "fork error");
       }
-      else if(pid == 0){
-        Sub_Process_Work(input, cache_dir, log_file);
-        return 0;
+      else if(pid == 0){      //Sub-process work
+        Sub_Process_Work(input, cache_dir, log_file);     //make hashed url directory and file in ~/cache
+        exit(0);    //end process with 0
       }
       
-      process_count++;
-      if(pid = waitpid(pid, &status, 0) < 0){
+      //main-process work
+      process_count++;    //Count sub_process
+      if(pid = waitpid(pid, NULL, 0) < 0){  //Wait until sub-process end
         fprintf(stderr, "process error");
       }
     }
