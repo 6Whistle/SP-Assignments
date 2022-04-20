@@ -22,6 +22,18 @@
 #include <dirent.h>   //openDir()
 #include <time.h>     //Write_Log_File()
 #include <sys/wait.h>   //waitpid()
+#include <sys/socket.h>
+#include <signal.h>
+#include <netinet/in.h>
+
+#define BUFFSIZE 1024
+#define PORTNO 40000
+
+static void handler(){
+    pid_t pid;
+    int status;
+    while((pid = waitpid(-1, &status, WNOHANG)) > 0);
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -64,6 +76,26 @@ char *getHomeDir(char *home){
   return home;
 }
 
+void Make_Cache_Dir_Log_File(char* cache_dir, FILE* log_file){
+  char home_dir[100];		//Current user's home directory
+  char log_dir[100];    //Log directory
+
+  getHomeDir(home_dir);		//Find ~ directory
+
+  strcpy(cache_dir, home_dir);
+  strcat(cache_dir, "/cache");    //cache_dir = ~/cache
+
+  strcpy(log_dir, home_dir);
+  strcat(log_dir, "/logfile");    //log_dir = ~/logfile
+
+  umask(000);			//Directory's permission can be drwxrwxrwx
+  mkdir(cache_dir, 0777);	//make ~/cache Directory
+  mkdir(log_dir, 0777);   //make ~/logfile Directory
+  
+  strcat(log_dir, "/logfile.txt");   //Open ~/logfile/logfile.txt (read, write, append mode)
+  log_file = fopen(log_dir, "a+");
+  fseek(log_file, 0, SEEK_END);       //file pointer is in the end of file
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Check_Exist_File							      //
@@ -137,32 +169,33 @@ void Write_Log_File(FILE *log_file, char *input_url, char *hashed_url_dir, char 
 //           write hit and miss state in ~/logfile/logfile.txt		      //
 ////////////////////////////////////////////////////////////////////////////////
 
-void Sub_Process_Work(char *input, char *cache_dir, FILE *log_file){
+void Sub_Process_Work(int client_fd, char *buf, char *cache_dir, FILE *log_file){
   char hashed_url[60];		//Store hashed URL using SHA1
   char first_dir[4];		//Directory that will be made in cache directory  
   char *dir_div;		//Seperate point of hashed URL name
   char temp_dir[100];		//Path is used when it makes directory or file 
 
+  int len_out;
   int is_exist_file;  //State directory/file is exist
   int hit = 0, miss = 0;  //Count hit and miss
 
   FILE *temp_file;		//Using when make a empty file
   pid_t current_pid = getpid();   //Current process id
   time_t start_process_time, end_process_time;    //Process start and end time
+  
   time(&start_process_time);  //Check process start time
+  bzero(buf, BUFFSIZE);
 
-    while(1){
-    printf("[%d]input URL> ", current_pid);	//Print process id and get URL
-    scanf("%s", input);
-    if(strcmp(input, "bye") == 0){	//if it's 'bye' command, write log at logfile.txt and end function
-      
-      time(&end_process_time);      //check end process time
-      fprintf(log_file, "[Terminated] run time: %d sec #request hit : %d, miss : %d\n", (int)(end_process_time-start_process_time), hit, miss);   //write process execute time, hit, miss in logfile.txt
-      return;         //end program
-    }
+    while((len_out = read(client_fd, buf, BUFFSIZE)) > 0){
+      buf[len_out] = '\0';
+      if(strcmp(buf, "bye") == 0){	//if it's 'bye' command, write log at logfile.txt and end function
+        time(&end_process_time);      //check end process time
+        fprintf(log_file, "[Terminated] run time: %d sec #request hit : %d, miss : %d\n", (int)(end_process_time-start_process_time), hit, miss);   //write process execute time, hit, miss in logfile.txt
+        return;         //end program
+      }
       
     is_exist_file = 1;
-    sha1_hash(input, hashed_url);	//URL -> hashed URL
+    sha1_hash(buf, hashed_url);	//URL -> hashed URL
     strncpy(first_dir, hashed_url, 3);	//Directory name <- hashed URL[0~2]
     first_dir[3] = '\0';
     dir_div = hashed_url + 3;		//File name pointer
@@ -174,7 +207,15 @@ void Sub_Process_Work(char *input, char *cache_dir, FILE *log_file){
       is_exist_file = 0;
 
     is_exist_file = Check_Exist_File(temp_dir, dir_div, is_exist_file);   //Check ~/cache/Directory name/File name is exist
-    Write_Log_File(log_file, input, first_dir, dir_div, is_exist_file, &hit, &miss);    //Write the state(hit or miss) in logfile.txt
+    Write_Log_File(log_file, buf, first_dir, dir_div, is_exist_file, &hit, &miss);    //Write the state(hit or miss) in logfile.txt
+    
+    bzero(buf, BUFFSIZE);
+    if(is_exist_file)
+      strcpy(buf, "HIT");
+    else
+      strcpy(buf, "MISS");
+    
+    write(client_fd, buf, sizeof(buf));
 
     strcat(temp_dir, "/");		//Make empty file ~/cache/Directory name/File name (premission : rwxrwxrwx)
     strcat(temp_dir, dir_div);
@@ -184,14 +225,14 @@ void Sub_Process_Work(char *input, char *cache_dir, FILE *log_file){
 }
 
 void main(void){
-  char input[100];		//Store input Data(URL or bye)
-  char hashed_url[60];		//Store hashed URL using SHA1
-  char home_dir[100];		//Current user's home directory
+  char buf[BUFFSIZE];
   char cache_dir[100];   //Cache directory
-  char log_dir[100];    //Log directory
-  char first_dir[4];		//Directory that will be made in cache directory
-  char *dir_div;		//Seperate point of hashed URL name
   int process_count = 0;    //Count sub-process
+  int socket_fd, client_fd;
+  int len, len_out;
+  int state;
+
+  struct sockaddr_in server_addr, client_addr;
 
   FILE *log_file;     //Using when write log file
   pid_t pid, current_pid = getpid();
@@ -200,46 +241,55 @@ void main(void){
 
   time(&start_time);    //Check Start time
 
-  getHomeDir(home_dir);		//Find ~ directory
+  Make_Cache_Dir_Log_File(cache_dir, log_file);
 
-  strcpy(cache_dir, home_dir);
-  strcat(cache_dir, "/cache");    //cache_dir = ~/cache
+  if((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0){
+    printf("Server : Can't open stream socket\n");
+    return 0;
+  }
 
-  strcpy(log_dir, home_dir);
-  strcat(log_dir, "/logfile");    //log_dir = ~/logfile
+  bzero((char*)&server_addr, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  server_addr.sin_port = htons(PORTNO);
 
-  umask(000);			//Directory's permission can be drwxrwxrwx
-  mkdir(cache_dir, 0777);	//make ~/cache Directory
-  mkdir(log_dir, 0777);   //make ~/logfile Directory
-  
-  strcat(log_dir, "/logfile.txt");   //Open ~/logfile/logfile.txt (read, write, append mode)
-  log_file = fopen(log_dir, "a+");
-  fseek(log_file, 0, SEEK_END);       //file pointer is in the end of file
+  if(bind(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0){
+    printf("Server : Can't bind local address\n");
+    close(socket_fd);
+    return 0;
+  }
+
+  listen(socket_fd, 5);
+  signal(SIGCHLD, (void *)handler);
 
   while(1){
-    printf("[%d]input CMD> ", current_pid); //Print Current pid and get command
-    scanf("%s", input);
+    bzero((char*)&client_addr, sizeof(client_addr));
+    len = sizeof(client_addr);
+    client_fd = accept(socket_fd, (struct sockaddr *)&server_addr, &len);
 
-    if(strcmp(input, "quit") == 0){   //if command is "quit", write log at logfile.txt and end program
-      time(&end_time);    //Check end time
-      fprintf(log_file, "**SERVER** [Terminated] runtime: %d  sec. #sub process: %d\n", (int)(end_time - start_time), process_count); //Write end server comment, execute time, sub-process count in logfile.txt
-      fclose(log_file);   //close logfile.txt
-      return;
+    if(client_fd < 0){
+      printf("Server : accept failed\n");
+      close(socket_fd);
+      return 0;
     }
-    if(strcmp(input, "connect") == 0){  //if command is "connect", make sub-process and run Sub_Process_Work in that process
-      if((pid = fork()) < 0){     //if failed to make sub-process, print error
-        fprintf(stderr, "fork error");
-      }
-      else if(pid == 0){      //Sub-process work
-        Sub_Process_Work(input, cache_dir, log_file);     //make hashed url directory and file in ~/cache
-        exit(0);    //end process with 0
-      }
-      
-      //main-process work
-      process_count++;    //Count sub_process
-      if(pid = waitpid(pid, NULL, 0) < 0){  //Wait until sub-process end
-        fprintf(stderr, "process error");
-      }
+
+    printf("[%d | %d] Client was connected\n", client_addr.sin_addr.s_addr, client_addr.sin_port);
+    if((pid = fork()) == -1){
+      close(client_fd);
+      close(socket_fd);
+      continue;
     }
+
+    if(pid == 0){
+      Sub_Process_Work(client_fd ,buf, cache_dir, log_file);
+      printf("[%d | %d] Client was disconnected\n", client_addr.sin_addr.s_addr, client_addr.sin_port);
+      close(client_fd);
+      exit(0);
+    }
+    close(client_fd);
   }
+  time(&end_time);    //Check end time
+  fprintf(log_file, "**SERVER** [Terminated] runtime: %d  sec. #sub process: %d\n", (int)(end_time - start_time), process_count); //Write end server comment, execute time, sub-process count in logfile.txt
+  fclose(log_file);   //close logfile.txt
+  close(socket_fd);
 }
