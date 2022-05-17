@@ -1,18 +1,13 @@
-OBJ1 = server.c
-OBJ2 = client.c
-RUN1 = server
-RUN2 = client
+OBJ1 = proxy_cache.c
+RUN1 = proxy_cache
 CC = gcc
 OPT = -o
 SHA = -lcrypto
 
-all: $(RUN1) $(RUN2)
+all: $(RUN1)
 
 $(RUN1): $(OBJ1)
 	$(CC) $(OPT) $@ $^ $(SHA)
 
-$(RUN2): $(OBJ2)
-	$(CC) $(OPT) $@ $^
-	
 clean :
-	rm -rf $(RUN1) $(RUN2)
+	rm -rf $(RUN1)

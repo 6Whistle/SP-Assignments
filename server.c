@@ -1,14 +1,14 @@
 ///////////////////////////////////////////////////////////////////////////////
-// File Name	: proxy_cache.c						     //
-// Date 	: 2022/03/24						     //
+// File Name	: server.c						     //
+// Date 	: 2022/04/26						     //
 // OS		: Ubuntu 16.04 LTS 64bits				     //
 // Author	: Jun Hwei Lee						     //
 // Student ID	: 2018202046						     //
 //---------------------------------------------------------------------------//
-// Title : System Programming Assignment #1-3 (proxy server)		     //
-// Description :  Get command from user and make sub-process		     //
-//                In sub-process, make cache 			             //
-//                Write hit and miss terminate state in logfile.txt  	     //
+// Title : System Programming Assignment #2-1 (proxy server)		     //
+// Description :  Make Socket and wait client		    		     //
+//                if client connected, Get URL from client          	     //
+//                Make Cache and Log using URL  	     		     //
 ///////////////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>		//printf()
@@ -22,18 +22,24 @@
 #include <dirent.h>   //openDir()
 #include <time.h>     //Write_Log_File()
 #include <sys/wait.h>   //waitpid()
-#include <sys/socket.h>
-#include <signal.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <sys/socket.h> //socket()
+#include <signal.h>     //signal()
+#include <netinet/in.h> //htonl()
+#include <arpa/inet.h>  //inet_ntoa()
 
 #define BUFFSIZE 1024
 #define PORTNO 40000
 
+////////////////////////////////////////////////////////////////////////////////
+// handler								      //
+//============================================================================//
+// Purpose : Handling child process					      //
+////////////////////////////////////////////////////////////////////////////////
+
 static void handler(){
     pid_t pid;
     int status;
-    while((pid = waitpid(-1, &status, WNOHANG)) > 0);
+    while((pid = waitpid(-1, &status, WNOHANG)) > 0);     //Wait Any child with WNOHANG
 }
 
 
@@ -77,24 +83,32 @@ char *getHomeDir(char *home){
   return home;
 }
 
-void Make_Cache_Dir_Log_File(char* cache_dir, char* log_dir){
-  char home_dir[100];		//Current user's home directory
 
+////////////////////////////////////////////////////////////////////////////////
+// Make_Cache_Dir_Log_File						      //
+//============================================================================//
+// Input : char *cache_dir -> Store cache directory's path	 	      //
+//         char *log_file -> Store log file's path,		     	      //
+// Purpose : Make cache and logfile Directory. Store path		      //
+////////////////////////////////////////////////////////////////////////////////
+
+void Make_Cache_Dir_Log_File(char* cache_dir, char* log_file){
+  char home_dir[100];		//Current user's home directory
 
   getHomeDir(home_dir);		//Find ~ directory
 
   strcpy(cache_dir, home_dir);
   strcat(cache_dir, "/cache");    //cache_dir = ~/cache
-
-  strcpy(log_dir, home_dir);
-  strcat(log_dir, "/logfile");    //log_dir = ~/logfile
+  strcpy(log_file, home_dir);
+  strcat(log_file, "/logfile");    //log_file = ~/logfile
 
   umask(000);			//Directory's permission can be drwxrwxrwx
   mkdir(cache_dir, 0777);	//make ~/cache Directory
-  mkdir(log_dir, 0777);   //make ~/logfile Directory
+  mkdir(log_file, 0777);   //make ~/logfile Directory
   
-  strcat(log_dir, "/logfile.txt");   //Open ~/logfile/logfile.txt (read, write, append mode)
+  strcat(log_file, "/logfile.txt");   //Open ~/logfile/logfile.txt (read, write, append mode)
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Check_Exist_File							      //
@@ -128,7 +142,7 @@ int Check_Exist_File(char* path, char *file_name, int is_exist_file){
 ////////////////////////////////////////////////////////////////////////////////
 // Write_Log_File							      //
 //============================================================================//
-// Input : File *log_file -> opened file pointer,			      //
+// Input : File *log_dir -> opened file pointer,			      //
 //    char *input_url -> input URL,				     	      //
 //    char *hashed_url_dir -> hashed directory name,			      //
 //    char *hashed_url_file -> hashed file name,			      //
@@ -150,12 +164,12 @@ void Write_Log_File(char *log_dir, int cur_pid, char *input_url, char *hashed_ur
   log_file = fopen(log_dir, "a");
   if(is_exist_file == 0){   //if file isn't exist, write miss state at logfile.txt
     fprintf(log_file, "[MISS] ServerPID : %d | %s-[%d/%d/%d, %02d:%02d:%02d]\n",
-    cur_pid, input_url, ltp->tm_year+1900, ltp->tm_mon, ltp->tm_mday, ltp->tm_hour, ltp->tm_min, ltp->tm_sec);
+    cur_pid, input_url, ltp->tm_year+1900, ltp->tm_mon+1, ltp->tm_mday, ltp->tm_hour, ltp->tm_min, ltp->tm_sec);
     (*miss)++;    //miss count
   }
   else{   //if file is exist, write hit state at logfile.txt
     fprintf(log_file, "[HIT] ServerPID : %d | %s/%s-[%d/%d/%d, %02d:%02d:%02d]\n",
-    cur_pid, hashed_url_dir, hashed_url_file, ltp->tm_year, ltp->tm_mon, ltp->tm_mday, ltp->tm_hour, ltp->tm_min, ltp->tm_sec);
+    cur_pid, hashed_url_dir, hashed_url_file, ltp->tm_year+1900, ltp->tm_mon+1, ltp->tm_mday, ltp->tm_hour, ltp->tm_min, ltp->tm_sec);
     fprintf(log_file, "[HIT]%s\n", input_url);
     (*hit)++;     //hit count
   }
@@ -165,9 +179,11 @@ void Write_Log_File(char *log_dir, int cur_pid, char *input_url, char *hashed_ur
 ////////////////////////////////////////////////////////////////////////////////
 // Sub_Process_Work							      //
 //============================================================================//
-// Input : char *input -> get URL from user,				      //
-//    char *cache_dir -> ~/cache path,				     	      //
-//    FILE *log_file -> Write ~/logfile/logfile.txt,			      //
+// Input : char *client_fd -> client's file descriptor,			      //
+//         struct sockaddr_in *client_addr -> client's address info,          //
+//         char *buf -> input buffer,     				      //
+//         char *cache_dir -> ~/cache path,				      //
+//         FILE *log_file -> Write ~/logfile/logfile.txt,		      //
 // Output : void						       	      //
 // Purpose : Make hashed url directory and file in ~/cache/,	              //
 //           write hit and miss state in ~/logfile/logfile.txt		      //
@@ -183,16 +199,16 @@ void Sub_Process_Work(int client_fd, struct sockaddr_in client_addr, char *buf, 
   int is_exist_file;  //State directory/file is exist
   int hit = 0, miss = 0;  //Count hit and miss
 
-  FILE *log_file;
+  FILE *log_file;     //log_file's path
   FILE *temp_file;		//Using when make a empty file
   pid_t current_pid = getpid();   //Current process id
   time_t start_process_time, end_process_time;    //Process start and end time
   
   time(&start_process_time);  //Check process start time
-  bzero(buf, BUFFSIZE);
+  bzero(buf, BUFFSIZE);       //buffer clear
+  printf("[%s | %d] Client was connected\n",inet_ntoa(client_addr.sin_addr),  client_addr.sin_port);    //Print whitch Client is connected and pid number
 
-  printf("[127.0.0.1 | %d] Client was connected\n", client_addr.sin_port);
-
+  //Read Data From client File Descriptor
   while((len_out = read(client_fd, buf, BUFFSIZE)) > 0){
     buf[len_out-1] = '\0';
     is_exist_file = 1;
@@ -217,81 +233,85 @@ void Sub_Process_Work(int client_fd, struct sockaddr_in client_addr, char *buf, 
 
     bzero(buf, BUFFSIZE);
 
-    if(is_exist_file)
+    if(is_exist_file)       //if HIT state, buf = HIT
       strncat(buf, "HIT", 3);
     else
-      strncat(buf, "MISS", 4);
-    write(client_fd, buf, strlen(buf));
-    bzero(buf, BUFFSIZE);
+      strncat(buf, "MISS", 4);  //if MISS state, buf = MISS
+    write(client_fd, buf, strlen(buf));   //Send state data to client file descriptor
+    bzero(buf, BUFFSIZE);     //buffer clear
   }
   
   time(&end_process_time);      //check end process time
   log_file = fopen(log_dir, "a");
   fprintf(log_file, "[Terminated] ServerPID : %d | run time: %d sec #request hit : %d, miss : %d\n",
-  current_pid, (int)(end_process_time-start_process_time), hit, miss);   //write process execute time, hit, miss in logfile.txt
+  current_pid, (int)(end_process_time-start_process_time), hit, miss);   //write whitch client was terminated, process execute time, hit, miss in logfile.txt
   fclose(log_file);
-  printf("[%s | %d] Client was disconnected\n", inet_ntoa(client_addr.sin_addr) , client_addr.sin_port);
+  printf("[%s | %d] Client was disconnected\n", inet_ntoa(client_addr.sin_addr) , client_addr.sin_port);  //print whitch client was terminated and pid number
   return;         //end program
 }
 
+
 void main(void){
-  char buf[BUFFSIZE];
+  char buf[BUFFSIZE];     //buffer
   char cache_dir[100];   //Cache directory
   char log_dir[100];    //Log directory
   int process_count = 0;    //Count sub-process
-  int socket_fd, client_fd;
-  int len, len_out;
-  int state;
+  int socket_fd, client_fd;   //socket and client file descriptor
+  int len, len_out;       //length of buffer          
 
-  struct sockaddr_in server_addr, client_addr;
+  struct sockaddr_in server_addr, client_addr;    //server address and client address
 
   FILE *log_file;     //Using when write log file
-  pid_t pid, current_pid = getpid();
+  pid_t pid;          //child pid
 
-  Make_Cache_Dir_Log_File(cache_dir, log_dir);
+  Make_Cache_Dir_Log_File(cache_dir, log_dir);    //Make cache and log directory, and update path
 
-  if((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0){
+  if((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0){    //if can't open socket, return with error
     printf("Server : Can't open stream socket\n");
     return;
   }
 
+  //Server address information update
   bzero((char*)&server_addr, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   server_addr.sin_port = htons(PORTNO);
 
+  //if can't ind socket file descriptor and address information, return with error
   if(bind(socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0){
     printf("Server : Can't bind local address\n");
     close(socket_fd);
     return;
   }
 
-  listen(socket_fd, 5);
-  signal(SIGCHLD, (void *)handler);
+  listen(socket_fd, 5);         //wait for client's connect
+  signal(SIGCHLD, (void *)handler);   //catch SIGCHID signal
 
   while(1){
+    //accept client's connection request
     bzero((char*)&client_addr, sizeof(client_addr));
     len = sizeof(client_addr);
     client_fd = accept(socket_fd, (struct sockaddr *)&client_addr, &len);
 
+    //if faild to accept, return with error
     if(client_fd < 0){
       printf("Server : accept failed\n");
       close(socket_fd);
       return;
     }
-    
+
+    //if failed to make child process, close client file descriptor   
     if((pid = fork()) == -1){
       close(client_fd);
       close(socket_fd);
       continue;
     }
-    if(pid == 0){
+    if(pid == 0){   //Do sub process work in child process
       Sub_Process_Work(client_fd, client_addr, buf, cache_dir, log_dir);
       close(client_fd);
       exit(0);
     }
-    close(client_fd);
+    close(client_fd);   //Main process close file descriptor
   }
-  close(socket_fd);
+  close(socket_fd);   //Close socket file descriptor
 }
-
