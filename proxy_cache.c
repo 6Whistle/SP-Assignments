@@ -1,19 +1,21 @@
-///////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
 // File Name	: proxy_cache.c						     //
-// Date 	: 2022/04/26						     //
+// Date 	: 2022/05/25						     //
 // OS		: Ubuntu 16.04 LTS 64bits				     //
 // Author	: Jun Hwei Lee						     //
 // Student ID	: 2018202046						     //
 //---------------------------------------------------------------------------//
-// Title : System Programming Assignment #2-2 (proxy server)		     //
+// Title : System Programming Assignment #2-4 (proxy server)		     //
 // Description :  Make Socket and wait client		    		     //
 //                if client connected, Get URL from client          	     //
-//                Make Cache and Log using URL  	     		     //
-//                Send response message to client  	     		     //
+//                Write Cache and Log using URL and Response  	    	     //
+//		  if miss state, connect with web server		     //
+//                signal SIGALRM Handing				     //
+//                Send cache data to client	  	     		     //
 ///////////////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>		//printf()
-#include <stdlib.h>   //exit()
+#include <stdlib.h>  		//exit()
 #include <string.h>		//strcpy()
 #include <openssl/sha.h>	//SHA1()
 #include <sys/types.h>		//getHomeDir()
@@ -28,6 +30,7 @@
 #include <netinet/in.h> //htonl()
 #include <arpa/inet.h>  //inet_ntoa()
 #include <netdb.h>      //gethostbyname()
+#include <fcntl.h>
 
 #define BUFFSIZE 1024
 #define PORTNO 39999
@@ -61,9 +64,9 @@ static void AlarmHandler(){
 ////////////////////////////////////////////////////////////////////////////////
 // getIPAddr								      //
 //============================================================================//
-// Input : char *addr -> Input URL,				      //
-// Output : char * -> IPv4 address				      //
-// Purpose : Get IPv4 address from URL						      //
+// Input : char *addr -> Input URL,					      //
+// Output : char * -> IPv4 address					      //
+// Purpose : Get IPv4 address from URL					      //
 ////////////////////////////////////////////////////////////////////////////////
 
 char *getIPAddr(char *addr) {
@@ -73,10 +76,12 @@ char *getIPAddr(char *addr) {
   char *token = NULL;
   int len = strlen(addr);
 
+  //Get URL Domain
   strcpy(temp, addr);
   strtok(temp, "//");
   token = strtok(NULL, "/");
 
+  //Get Host address using Domain
   if((hent = (struct hostent*)gethostbyname(token)) != NULL)
     haddr = inet_ntoa(*((struct in_addr*)hent->h_addr_list[0]));
   return haddr;
@@ -218,47 +223,101 @@ void Write_Log_File(char *log_dir, int cur_pid, char *input_url, char *hashed_ur
 
 
 ////////////////////////////////////////////////////////////////////////////////
-// Check_Cache								      //
+// Check_Cache_Print_Web						      //
 //============================================================================//
-// Input : char *url -> URL name,					      //
+// Input : int client_fd -> client's file descriptor		              // 
+//    char *url -> URL name,						      //
 //    char *cache_dir -> cache directory path,			     	      //
 //    char *log_file -> logfile path,					      //
+//    char *buf -> Client's request,					      //
 //    int current_pid -> current process ID,				      //
+//    int len -> buf's length,						      //
 //    int *hit -> count of hit,						      //
 //    int *miss -> count of miss,					      //
 // Output : int -> URL HIT : 1, MISS : 0			       	      //
 // Purpose : Make URL's Cache directory and check state(hit or miss)	      //
+//	     If Miss state, save Response msg from Web, and send to client    //
+//	     If Hit state, read cache file, and send to client		      //
 ////////////////////////////////////////////////////////////////////////////////
 
-int Check_Cache(char *url, char *cache_dir, char *log_file, int current_pid, int* hit, int* miss){
-    char hashed_url[60];		//Store hashed URL using SHA1
-    char first_dir[4];		//Directory that will be made in cache directory  
-    char *dir_div;		//Seperate point of hashed URL name
-    char temp_dir[100];		//Path is used when it makes directory or file 
-    int is_exist_file = 1;
+int Check_Cache_Print_Web(int client_fd, char *url, char *cache_dir, char *log_file, char *buf, int current_pid, int len, int* hit, int* miss){
+  char hashed_url[60];		//Store hashed URL using SHA1
+  char first_dir[4];		//Directory that will be made in cache directory  
+  char *dir_div;		//Seperate point of hashed URL name
+  char temp_dir[100];		//Path is used when it makes directory or file 
+  char *haddr = NULL;
+  char h_buf[BUFFSIZE] = {0, };
+  int h_socket_fd, cache_fd, h_len;
+  int is_exist_file = 1;
 
-    FILE *temp_file;		//Using when make a empty file
+  struct sockaddr_in web_server_addr;
 
-    sha1_hash(url, hashed_url);	//URL -> hashed URL
-    strncpy(first_dir, hashed_url, 3);	//Directory name <- hashed URL[0~2]
-    first_dir[3] = '\0';
-    dir_div = hashed_url + 3;		//File name pointer
+  bzero(h_buf, sizeof(h_buf));
 
-    strcpy(temp_dir, cache_dir);		//Make directory ~/cache/Directory name (permission : rwxrwxrwx)
-    strcat(temp_dir, "/");
-    strcat(temp_dir, first_dir);
-    if(mkdir(temp_dir, 0777) == 0)    //Directory isn't already exist, is_exist_file is 0 
-      is_exist_file = 0;
+  sha1_hash(url, hashed_url);	//URL -> hashed URL
+  strncpy(first_dir, hashed_url, 3);	//Directory name <- hashed URL[0~2]
+  first_dir[3] = '\0';
+  dir_div = hashed_url + 3;		//File name pointer
 
-    is_exist_file = Check_Exist_File(temp_dir, dir_div, is_exist_file);   //Check ~/cache/Directory name/File name is exist
-    Write_Log_File(log_file, current_pid, url, first_dir, dir_div, is_exist_file, hit, miss);    //Write the state(hit or miss) in logfile.txt
+  strcpy(temp_dir, cache_dir);		//Make directory ~/cache/Directory name (permission : rwxrwxrwx)
+  strcat(temp_dir, "/");
+  strcat(temp_dir, first_dir);
+  if(mkdir(temp_dir, 0777) == 0)    //Directory isn't already exist, is_exist_file is 0 
+    is_exist_file = 0;
 
-    strcat(temp_dir, "/");		//Make empty file ~/cache/Directory name/File name (premission : rwxrwxrwx)
-    strcat(temp_dir, dir_div);
-    temp_file = fopen(temp_dir, "a+");
-    fclose(temp_file);
+  is_exist_file = Check_Exist_File(temp_dir, dir_div, is_exist_file);   //Check ~/cache/Directory name/File name is exist
+  Write_Log_File(log_file, current_pid, url, first_dir, dir_div, is_exist_file, hit, miss);    //Write the state(hit or miss) in logfile.txt
+  
+  strcat(temp_dir, "/");		//Make empty file ~/cache/Directory name/File name (premission : rwxrwxrwx)
+  strcat(temp_dir, dir_div);
 
-    return is_exist_file;
+  //if state is miss, get connection with web server
+  if(is_exist_file == 0){
+    haddr = getIPAddr(url);   //Get host's IP address
+    if((h_socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0){    //Make socket descriptor
+      printf("can't creat socket.\n");
+      close(h_socket_fd);
+      exit(0);
+    }
+
+    //Web server's address
+    bzero((char*)&web_server_addr, sizeof(web_server_addr));
+    web_server_addr.sin_family = AF_INET;
+    web_server_addr.sin_addr.s_addr = inet_addr(haddr);
+    web_server_addr.sin_port = htons(WEBPORTNO);
+  
+    //Connect with Web server
+    if(connect(h_socket_fd, (struct sockaddr*)&web_server_addr, sizeof(web_server_addr)) < 0){
+      printf("can't connect.\n");
+      close(h_socket_fd);
+      exit(0);
+    }
+
+    //SIGALRM Handler
+    signal(SIGALRM, AlarmHandler);
+    
+    alarm(20);      //Wait 10 sec
+    //sleep(5);    //Connection error case
+    
+    cache_fd = open(temp_dir, O_WRONLY | O_CREAT | O_APPEND, 0777);   //Create file
+    write(h_socket_fd, buf, BUFFSIZE);     //Send request to web server
+    while(h_len = read(h_socket_fd, h_buf, BUFFSIZE)){  //Read data from web server
+      alarm(0);    //if Get data from web, alarm off
+      write(cache_fd, h_buf, h_len);      //Write data in cache file
+      write(client_fd, h_buf, h_len);     //Send data to client
+      bzero(h_buf, sizeof(h_buf));
+    }
+    close(h_socket_fd);
+  }
+  else{     //if state is hit, read cache file and send it to client
+    cache_fd = open(temp_dir, O_RDONLY);    //Open read mode
+    while(h_len = read(cache_fd, h_buf, BUFFSIZE)){   //Read all of data in cache file
+      write(client_fd, h_buf, BUFFSIZE);    //Send data to client
+      bzero(h_buf, sizeof(h_buf));
+    }
+  }
+  close(cache_fd);
+  return is_exist_file;
 }
 
 
@@ -277,21 +336,13 @@ int Check_Cache(char *url, char *cache_dir, char *log_file, int current_pid, int
 ////////////////////////////////////////////////////////////////////////////////
 
 void Sub_Process_Work(int client_fd, struct sockaddr_in client_addr, char *buf, char *cache_dir, char *log_dir){  
-  char response_header[BUFFSIZE] = {0, };         //response message / header
-  char response_message[BUFFSIZE] = {0, };
   char tmp[BUFFSIZE] = {0, };
-  char temp_url[BUFFSIZE];
   char method[BUFFSIZE] = {0, };      //recieve method
   char url[BUFFSIZE] = {0, };         //recieve URL
   char *token = NULL;                 //tokenizer
-  char *url_token = NULL;
-  char *haddr = NULL;
-  char *h_buf[BUFFSIZE];
-  int h_socket_fd, h_len, len;
+  int len;
   int state;              //HIT or MISS exist 
   int hit = 0, miss = 0;  //Count hit and miss
-  
-  struct sockaddr_in web_server_addr;
 
   FILE *log_file;     //log_file's path
   FILE *temp_file;		//Using when make a empty file
@@ -302,7 +353,7 @@ void Sub_Process_Work(int client_fd, struct sockaddr_in client_addr, char *buf, 
   bzero(buf, BUFFSIZE);       //buffer clear
 
   //Read Data From client File Descriptor
-  if((len = read(client_fd, buf, BUFFSIZE)) > 0){
+  while((len = read(client_fd, buf, BUFFSIZE)) > 0){
     strcpy(tmp, buf);                       //Copy message and print it
     printf("================================================\n");
     printf("Request from [%s : %d]\n", inet_ntoa(client_addr.sin_addr), client_addr.sin_port);
@@ -316,56 +367,9 @@ void Sub_Process_Work(int client_fd, struct sockaddr_in client_addr, char *buf, 
     if(strcmp(method, "GET") == 0){
       token = strtok(NULL, " ");
       strcpy(url, token);
-      state = Check_Cache(url, cache_dir, log_dir, current_pid, &hit, &miss);
-
-      if(state == 0){
-        haddr = getIPAddr(url);
-        if((h_socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0){
-          printf("can't creat socket.\n");
-          close(h_socket_fd);
-          exit(0);
-        }
-
-        bzero((char*)&web_server_addr, sizeof(web_server_addr));
-        web_server_addr.sin_family = AF_INET;
-        web_server_addr.sin_addr.s_addr = inet_addr(haddr);
-        web_server_addr.sin_port = htons(WEBPORTNO);
-
-        if(connect(h_socket_fd, (struct sockaddr*)&web_server_addr, sizeof(web_server_addr)) < 0){
-          printf("can't connect.\n");
-          close(h_socket_fd);
-          exit(0);
-        }
-
-        signal(SIGALRM, AlarmHandler);
-        alarm(10);
-        //sleep(11);
-        write(h_socket_fd, buf, len);
-        h_len = 0;
-        if((h_len = read(h_socket_fd, h_buf, sizeof(h_buf))) > 0){
-          alarm(0);
-        }
-        close(h_socket_fd);
-      }
-
-      //response message
-      sprintf(response_message,
-            "<h1>%s<h1><br>"
-            "%s:%d<br>"
-            "%s<br>"
-            "kw2018202046", state == 1 ? "HIT" : "MISS", inet_ntoa(client_addr.sin_addr), client_addr.sin_port, url);
-      //response header
-      sprintf(response_header,
-            "HTTP/1.0 200 OK\r\n"
-            "Server:proxy server\r\n"
-            "Content-length:%lu\r\n"
-            "Content-type:text/html\r\n\r\n", strlen(response_message));      
-      //send data to client  
-      write(client_fd, response_header, strlen(response_header));
-      write(client_fd, response_message, strlen(response_message));
-      close(h_socket_fd);
+      state = Check_Cache_Print_Web(client_fd, url, cache_dir, log_dir, buf, current_pid, len, &hit, &miss);
     }
-    
+
     time(&end_process_time);      //check end process time
     log_file = fopen(log_dir, "a");
     fprintf(log_file, "[Terminated] ServerPID : %d | run time: %d sec #request hit : %d, miss : %d\n",
